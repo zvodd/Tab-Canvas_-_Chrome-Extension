@@ -15,6 +15,7 @@
       <button id="clear-selection">Clear selection</button>
       <button id="close-selected" class="danger" title="Close all selected tabs">Close selected</button>
       <button id="merge-selected" title="Move all selected tabs into one new window">Merge selected</button>
+      <button id="stash-selected" title="Move all selected tabs into the stash window">Stash selected</button>
       <span id="selection-count" class="muted"></span>
     </div>
     <div class="toolbar-group">
@@ -39,8 +40,20 @@
     </div>
   </aside>
 
-  <main id="canvas" aria-label="Window groups">
-    <div id="lasso" class="hidden"></div>
+  <main id="workspace">
+    <div id="canvas" aria-label="Window groups">
+      <div id="lasso" class="hidden"></div>
+    </div>
+    <aside id="side-panel" aria-label="Stash and trash">
+      <section class="side-section stash-section">
+        <header>Stash <span id="stash-count" class="count"></span></header>
+        <div id="stash-list" class="side-list"></div>
+      </section>
+      <section class="side-section trash-section">
+        <header>Trash <span id="trash-count" class="count"></span></header>
+        <div id="trash-list" class="side-list"></div>
+      </section>
+    </aside>
   </main>
 
   <script src="lib/tabmap-api.js"></script>

@@ -3,7 +3,7 @@
   "name": "Tab Canvas",
   "version": "0.1.0",
   "description": "A canvas-style view of all your tabs and windows, with lasso selection and JSON remap.",
-  "permissions": ["tabs"],
+  "permissions": ["tabs", "storage"],
   "action": {
     "default_title": "Open Tab Canvas"
   },

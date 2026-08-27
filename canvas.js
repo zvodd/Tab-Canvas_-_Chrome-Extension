@@ -9,9 +9,43 @@
   const jsonEditor = document.getElementById("json-editor");
   const jsonStatus = document.getElementById("json-status");
   const selectionCount = document.getElementById("selection-count");
+  const stashListEl = document.getElementById("stash-list");
+  const trashListEl = document.getElementById("trash-list");
+  const stashCountEl = document.getElementById("stash-count");
+  const trashCountEl = document.getElementById("trash-count");
 
   /** Set of selected tabIds. */
   const selected = new Set();
+
+  /** Stash window id (persisted). Tabs here are shown in the side panel, not
+   *  the canvas. null when no stash window exists (yet). */
+  let stashWindowId = null;
+  /** Trash entries: [{ url, title, favIconUrl, closedAt }]. Persisted. */
+  let trash = [];
+  const TRASH_MAX = 100;
+
+  /** This extension page's own tab, so we can refocus it and avoid stashing it. */
+  let selfTab = null;
+
+  async function ensureSelfTab() {
+    if (!selfTab) {
+      try { selfTab = await chrome.tabs.getCurrent(); } catch { selfTab = null; }
+    }
+    return selfTab;
+  }
+
+  /** Bring the Tab Reorganizer window + tab back to the front. Call after any
+   *  operation that may have shifted focus to another window. */
+  async function refocusSelf() {
+    const me = await ensureSelfTab();
+    if (!me) return;
+    try {
+      await chrome.windows.update(me.windowId, { focused: true });
+    } catch { /* window may be gone */ }
+    try {
+      await chrome.tabs.update(me.id, { active: true });
+    } catch { /* tab may be gone */ }
+  }
 
   /** Undo/redo stacks of selection snapshots (cloned Sets of tabIds). */
   const history = {
@@ -47,10 +81,22 @@
   /* ---------- rendering ---------- */
 
   async function render() {
+    await ensureSelfTab();
     const snap = await TabMap.snapshot();
     const windows = await chrome.windows.getAll({});
+    const liveWindowIds = new Set(windows.map((w) => w.id));
     const focusedWindowId = windows.find((w) => w.focused)?.id;
-    const groups = TabMap.groupByWindows(snap.tabs);
+
+    // Reconcile stash window id against live windows.
+    if (stashWindowId != null && !liveWindowIds.has(stashWindowId)) {
+      stashWindowId = null;
+      await persistStashWindowId();
+    }
+
+    let groups = TabMap.groupByWindows(snap.tabs);
+    const stashGroup = groups.find((g) => g.windowId === stashWindowId);
+    // Hide the stash window from the canvas; it lives in the side panel.
+    groups = groups.filter((g) => g.windowId !== stashWindowId);
 
     // A re-render recreates rows; any in-flight lasso preview is now stale.
     cancelLasso();
@@ -61,12 +107,16 @@
       empty.id = "empty-state";
       empty.textContent = "No tabs found.";
       canvasEl.appendChild(empty);
-      return;
+    } else {
+      for (const group of groups) {
+        canvasEl.appendChild(renderWindowGroup(group, group.windowId === focusedWindowId));
+      }
     }
 
-    for (const group of groups) {
-      canvasEl.appendChild(renderWindowGroup(group, group.windowId === focusedWindowId));
-    }
+    renderSidePanel(stashGroup);
+    // Drop selection entries whose tabs no longer exist.
+    const liveTabIds = new Set(snap.tabs.map((t) => t.tabId));
+    for (const id of [...selected]) if (!liveTabIds.has(id)) selected.delete(id);
     syncSelectionUI();
   }
 
@@ -188,6 +238,155 @@
       if (checkbox) checkbox.checked = on;
     }
     selectionCount.textContent = selected.size ? `${selected.size} selected` : "";
+  }
+
+  /* ---------- side panel: stash + trash ---------- */
+
+  function renderSidePanel(stashGroup) {
+    // Stash
+    stashListEl.replaceChildren();
+    const stashTabs = stashGroup ? stashGroup.tabs : [];
+    stashCountEl.textContent = stashTabs.length ? `${stashTabs.length}` : "";
+    if (stashTabs.length === 0) {
+      stashListEl.appendChild(emptyHint("Stashed tabs appear here"));
+    } else {
+      for (const tab of stashTabs) stashListEl.appendChild(stashItem(tab));
+    }
+
+    // Trash
+    trashListEl.replaceChildren();
+    trashCountEl.textContent = trash.length ? `${trash.length}` : "";
+    if (trash.length === 0) {
+      trashListEl.appendChild(emptyHint("Closed tabs appear here"));
+    } else {
+      // Newest first.
+      for (const item of [...trash].reverse()) trashListEl.appendChild(trashItem(item));
+    }
+  }
+
+  function emptyHint(text) {
+    const el = document.createElement("div");
+    el.className = "side-empty";
+    el.textContent = text;
+    return el;
+  }
+
+  function stashItem(tab) {
+    const row = document.createElement("div");
+    row.className = "side-item";
+
+    if (tab.favIconUrl) {
+      const fav = document.createElement("img");
+      fav.src = tab.favIconUrl;
+      fav.onerror = () => fav.remove();
+      fav.alt = "";
+      row.appendChild(fav);
+    }
+
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = tab.title || tab.url || "(untitled)";
+    title.title = tab.url || "";
+    row.appendChild(title);
+
+    const restore = document.createElement("button");
+    restore.className = "restore-btn";
+    restore.textContent = "restore";
+    restore.title = "Restore this tab into a new window";
+    restore.addEventListener("click", () => restoreFromStash(tab.tabId));
+    row.appendChild(restore);
+    return row;
+  }
+
+  function trashItem(item) {
+    const row = document.createElement("div");
+    row.className = "side-item";
+
+    if (item.favIconUrl) {
+      const fav = document.createElement("img");
+      fav.src = item.favIconUrl;
+      fav.onerror = () => fav.remove();
+      fav.alt = "";
+      row.appendChild(fav);
+    }
+
+    const title = document.createElement("span");
+    title.className = "title";
+    title.textContent = item.title || item.url || "(untitled)";
+    title.title = item.url || "";
+    row.appendChild(title);
+
+    const restore = document.createElement("button");
+    restore.className = "restore-btn";
+    restore.textContent = "restore";
+    restore.title = "Reopen this tab in a new window";
+    restore.addEventListener("click", () => restoreFromTrash(item));
+    row.appendChild(restore);
+
+    const rm = document.createElement("button");
+    rm.className = "rm-btn";
+    rm.textContent = "×";
+    rm.title = "Forget this entry";
+    rm.addEventListener("click", () => removeFromTrash(item));
+    row.appendChild(rm);
+    return row;
+  }
+
+  async function restoreFromStash(tabId) {
+    try {
+      // chrome.windows.create with a tabId pulls it out of the stash window
+      // into a fresh window.
+      await chrome.windows.create({ tabId, focused: false });
+    } catch (err) {
+      setStatus(`Restore failed: ${err.message}`, true);
+      return;
+    }
+    await render();
+    await refocusSelf();
+  }
+
+  async function restoreFromTrash(item) {
+    try {
+      await chrome.windows.create({ url: item.url, focused: false });
+    } catch (err) {
+      setStatus(`Reopen failed: ${err.message}`, true);
+      return;
+    }
+    trash = trash.filter((t) => t !== item);
+    await persistTrash();
+    await render();
+    await refocusSelf();
+  }
+
+  async function removeFromTrash(item) {
+    trash = trash.filter((t) => t !== item);
+    await persistTrash();
+    await render();
+  }
+
+  /* ---------- persistence ---------- */
+
+  async function persistStashWindowId() {
+    try {
+      await chrome.storage.local.set({ stashWindowId });
+    } catch { /* storage unavailable */ }
+  }
+
+  async function persistTrash() {
+    try {
+      await chrome.storage.local.set({ trash });
+    } catch { /* storage unavailable */ }
+  }
+
+  async function loadPersisted() {
+    try {
+      const data = await chrome.storage.local.get(["stashWindowId", "trash"]);
+      stashWindowId = data.stashWindowId ?? null;
+      trash = Array.isArray(data.trash) ? data.trash.slice(0, TRASH_MAX) : [];
+    } catch {
+      stashWindowId = null;
+      trash = [];
+    }
   }
 
   /* ---------- lasso (state machine) ----------
@@ -387,6 +586,7 @@
       setStatus(`Moved ${result.moved} tab(s)${created}.`);
     }
     await render();
+    await refocusSelf();
   });
 
   /* ---------- misc toolbar ---------- */
@@ -415,6 +615,17 @@
     }
     const ids = [...selected];
     if (ids.length > 1 && !confirm(`Close ${ids.length} selected tabs?`)) return;
+    // Record each closed tab into the trash list before removing it, so the
+    // side panel can offer a one-click reopen.
+    const snap = await TabMap.snapshot();
+    const byId = new Map(snap.tabs.map((t) => [t.tabId, t]));
+    for (const id of ids) {
+      const t = byId.get(id);
+      if (!t || !t.url) continue;
+      trash.push({ url: t.url, title: t.title, favIconUrl: t.favIconUrl, closedAt: Date.now() });
+    }
+    trash = trash.slice(-TRASH_MAX);
+    await persistTrash();
     try {
       await chrome.tabs.remove(ids);
     } catch (err) {
@@ -424,6 +635,7 @@
     selected.clear();
     syncSelectionUI();
     await render();
+    await refocusSelf();
   });
 
   document.getElementById("merge-selected").addEventListener("click", async () => {
@@ -445,6 +657,46 @@
       setStatus(`Merged ${result.moved} tab(s) into new window.`);
     }
     await render();
+    await refocusSelf();
+  });
+
+  document.getElementById("stash-selected").addEventListener("click", async () => {
+    if (selected.size === 0) {
+      setStatus("No tabs selected to stash.", true);
+      return;
+    }
+    await ensureSelfTab();
+    // Never stash the Tab Reorganizer tab itself, and don't try to move tabs
+    // already in the stash window.
+    const ids = [...selected].filter((id) => id !== selfTab?.id);
+    if (ids.length === 0) {
+      setStatus("Nothing stashable selected.", true);
+      return;
+    }
+    setStatus("Stashing…");
+    try {
+      if (stashWindowId == null) {
+        // Create a minimized stash window seeded with the first tab, then move
+        // the rest in.
+        const win = await chrome.windows.create({ tabId: ids[0], focused: false, state: "minimized" });
+        stashWindowId = win.id;
+        await persistStashWindowId();
+        if (ids.length > 1) {
+          await chrome.tabs.move(ids.slice(1), { windowId: stashWindowId, index: -1 });
+        }
+      } else {
+        await chrome.tabs.move(ids, { windowId: stashWindowId, index: -1 });
+      }
+    } catch (err) {
+      setStatus(`Stash failed: ${err.message}`, true);
+      await render();
+      return;
+    }
+    selected.clear();
+    syncSelectionUI();
+    setStatus(`Stashed ${ids.length} tab(s).`);
+    await render();
+    await refocusSelf();
   });
 
   // Undo/redo of the selection area: Ctrl-Z / Ctrl-Shift-Z / Ctrl-Y.
@@ -481,5 +733,6 @@
     };
   }
 
-  render();
+  // Boot: load persisted stash/trash state, then render.
+  loadPersisted().then(render);
 })();

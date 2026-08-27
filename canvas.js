@@ -13,6 +13,8 @@
   const trashListEl = document.getElementById("trash-list");
   const stashCountEl = document.getElementById("stash-count");
   const trashCountEl = document.getElementById("trash-count");
+  const sidePanel = document.getElementById("side-panel");
+  const sideResizer = document.getElementById("side-resizer");
 
   /** Set of selected tabIds. */
   const selected = new Set();
@@ -607,6 +609,41 @@
   document.getElementById("refresh").addEventListener("click", render);
 
   document.getElementById("stash-export-md").addEventListener("click", exportStashMarkdown);
+
+  /* ---------- resizable side panel ---------- */
+
+  function setSideWidth(px) {
+    const clamped = Math.max(180, Math.min(px, Math.floor(window.innerWidth * 0.7)));
+    sidePanel.style.setProperty("--side-w", `${clamped}px`);
+    return clamped;
+  }
+
+  // Restore persisted width on load.
+  chrome.storage.local.get("sideW").then((d) => {
+    if (typeof d.sideW === "number") setSideWidth(d.sideW);
+  });
+
+  let resizing = null;
+  sideResizer.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    resizing = { startX: e.clientX, startW: sidePanel.getBoundingClientRect().width };
+    sideResizer.setPointerCapture(e.pointerId);
+    sideResizer.classList.add("dragging");
+  });
+  sideResizer.addEventListener("pointermove", (e) => {
+    if (!resizing) return;
+    const dx = e.clientX - resizing.startX;
+    setSideWidth(resizing.startW + dx);
+  });
+  const endResize = (e) => {
+    if (!resizing) return;
+    resizing = null;
+    sideResizer.classList.remove("dragging");
+    const w = sidePanel.getBoundingClientRect().width;
+    chrome.storage.local.set({ sideW: w });
+  };
+  sideResizer.addEventListener("pointerup", endResize);
+  sideResizer.addEventListener("pointercancel", endResize);
 
   document.getElementById("select-all").addEventListener("click", async () => {
     const prev = history.snapshot();

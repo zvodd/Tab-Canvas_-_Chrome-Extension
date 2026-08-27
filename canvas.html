@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tab Canvas</title>
+  <link rel="stylesheet" href="canvas.css" />
+</head>
+<body>
+  <header id="toolbar">
+    <h1>Tab Canvas</h1>
+    <div class="toolbar-group">
+      <button id="refresh" title="Re-snapshot tabs">Refresh</button>
+      <button id="select-all">Select all</button>
+      <button id="clear-selection">Clear selection</button>
+      <span id="selection-count" class="muted"></span>
+    </div>
+    <div class="toolbar-group">
+      <button id="export-json" title="Copy remap JSON of selected tabs">Export JSON</button>
+      <button id="toggle-json">JSON panel</button>
+    </div>
+  </header>
+
+  <aside id="json-panel" class="hidden">
+    <div class="panel-header">
+      <strong>Remap JSON</strong>
+      <span class="muted">List of { tabId, windowId }. Use a string key like "new:work" for a new window.</span>
+    </div>
+    <textarea id="json-editor" spellcheck="false" placeholder='[
+  { "tabId": 123, "title": "Example", "windowId": 456 },
+  { "tabId": 124, "title": "Other",   "windowId": "new:research" }
+]'></textarea>
+    <div class="panel-actions">
+      <button id="apply-remap" class="primary">Apply remap</button>
+      <button id="copy-json">Copy</button>
+      <span id="json-status" class="muted"></span>
+    </div>
+  </aside>
+
+  <main id="canvas" aria-label="Window groups">
+    <div id="lasso" class="hidden"></div>
+  </main>
+
+  <script src="lib/tabmap-api.js"></script>
+  <script src="canvas.js"></script>
+</body>
+</html>

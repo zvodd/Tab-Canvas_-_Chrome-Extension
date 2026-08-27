@@ -13,6 +13,37 @@
   /** Set of selected tabIds. */
   const selected = new Set();
 
+  /** Undo/redo stacks of selection snapshots (cloned Sets of tabIds). */
+  const history = {
+    undo: [],
+    redo: [],
+    commit(prevState) {
+      this.undo.push(prevState);
+      this.redo = [];
+    },
+    snapshot() {
+      return new Set(selected);
+    },
+    undo() {
+      if (this.undo.length === 0) return false;
+      this.redo.push(new Set(selected));
+      replaceSelection(this.undo.pop());
+      return true;
+    },
+    redo() {
+      if (this.redo.length === 0) return false;
+      this.undo.push(new Set(selected));
+      replaceSelection(this.redo.pop());
+      return true;
+    },
+  };
+
+  function replaceSelection(newSet) {
+    selected.clear();
+    for (const id of newSet) selected.add(id);
+    syncSelectionUI();
+  }
+
   /* ---------- rendering ---------- */
 
   async function render() {
@@ -21,6 +52,8 @@
     const focusedWindowId = windows.find((w) => w.focused)?.id;
     const groups = TabMap.groupByWindows(snap.tabs);
 
+    // A re-render recreates rows; any in-flight lasso preview is now stale.
+    cancelLasso();
     canvasEl.querySelectorAll(".window-group, #empty-state").forEach((el) => el.remove());
 
     if (groups.length === 0) {
@@ -47,6 +80,7 @@
 
     const title = document.createElement("span");
     title.textContent = `Window ${group.windowId} `;
+    title.title = "Drag here to lasso-select";
     header.appendChild(title);
 
     const count = document.createElement("span");
@@ -65,10 +99,23 @@
     selectWindowBtn.textContent = "select";
     selectWindowBtn.title = "Select all tabs in this window";
     selectWindowBtn.addEventListener("click", () => {
+      const prev = history.snapshot();
       for (const tab of group.tabs) selected.add(tab.tabId);
       syncSelectionUI();
+      history.commit(prev);
     });
     header.appendChild(selectWindowBtn);
+
+    const clearWindowBtn = document.createElement("button");
+    clearWindowBtn.textContent = "clear";
+    clearWindowBtn.title = "Deselect all tabs in this window";
+    clearWindowBtn.addEventListener("click", () => {
+      const prev = history.snapshot();
+      for (const tab of group.tabs) selected.delete(tab.tabId);
+      syncSelectionUI();
+      history.commit(prev);
+    });
+    header.appendChild(clearWindowBtn);
 
     const list = document.createElement("div");
     list.className = "tab-list";
@@ -126,9 +173,11 @@
   /* ---------- selection ---------- */
 
   function setSelected(tabId, on) {
+    const prev = history.snapshot();
     if (on) selected.add(tabId);
     else selected.delete(tabId);
     syncSelectionUI();
+    history.commit(prev);
   }
 
   function syncSelectionUI() {
@@ -141,28 +190,52 @@
     selectionCount.textContent = selected.size ? `${selected.size} selected` : "";
   }
 
-  /* ---------- lasso ---------- */
-  // Drag on empty canvas space draws a rectangle; any tab row it touches
-  // is added to the selection. Ctrl/Shift-drag adds to the selection,
-  // plain drag replaces it.
+  /* ---------- lasso (state machine) ----------
+     States: idle (lasso === null) | pending | active.
 
-  let lassoStart = null;
+     The golden rule: the `.selected` class always mirrors the `selected` Set.
+     During a drag, hits are shown with a *transient* `.lasso-hit` class, never
+     by writing `.selected`. The Set is only mutated on a committed pointerup.
+     Every terminal event — pointerup, pointercancel, lostpointercapture, or a
+     re-render — runs endLasso(), which is idempotent, so the preview/state can
+     never get stuck and lie about the real selection. */
+
+  const DRAG_THRESHOLD = 4; // px before a pointerdown becomes a lasso
+  let lasso = null;
 
   canvasEl.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
-    if (e.target.closest(".tab-row, .window-header, button")) return;
+    if (e.target.closest("button, .tab-row")) return; // they have their own clicks
 
-    lassoStart = { x: e.clientX, y: e.clientY, additive: e.ctrlKey || e.shiftKey };
-    canvasEl.setPointerCapture(e.pointerId);
+    // Defensive: abandon any lasso that never received a terminal event.
+    if (lasso) endLasso(false);
+
+    lasso = {
+      pointerId: e.pointerId,
+      sx: e.clientX,
+      sy: e.clientY,
+      additive: e.ctrlKey || e.shiftKey,
+      onBackground: e.target === canvasEl,
+      rect: null,
+    };
+    try {
+      canvasEl.setPointerCapture(e.pointerId);
+    } catch {
+      /* element detached or capture unavailable */
+    }
   });
 
   canvasEl.addEventListener("pointermove", (e) => {
-    if (!lassoStart) return;
+    if (!lasso || e.pointerId !== lasso.pointerId) return;
 
-    const x1 = Math.min(lassoStart.x, e.clientX);
-    const y1 = Math.min(lassoStart.y, e.clientY);
-    const x2 = Math.max(lassoStart.x, e.clientX);
-    const y2 = Math.max(lassoStart.y, e.clientY);
+    const dx = e.clientX - lasso.sx;
+    const dy = e.clientY - lasso.sy;
+    if (!lasso.rect && Math.hypot(dx, dy) < DRAG_THRESHOLD) return; // still a click
+
+    const x1 = Math.min(lasso.sx, e.clientX);
+    const y1 = Math.min(lasso.sy, e.clientY);
+    const x2 = Math.max(lasso.sx, e.clientX);
+    const y2 = Math.max(lasso.sy, e.clientY);
 
     const canvasRect = canvasEl.getBoundingClientRect();
     lassoEl.classList.remove("hidden");
@@ -171,16 +244,54 @@
     lassoEl.style.width = `${x2 - x1}px`;
     lassoEl.style.height = `${y2 - y1}px`;
 
-    lassoStart.rect = { left: x1, top: y1, right: x2, bottom: y2 };
-    previewLasso(lassoStart.rect, lassoStart.additive);
+    lasso.rect = { left: x1, top: y1, right: x2, bottom: y2 };
+    preview(lasso.rect);
   });
 
-  canvasEl.addEventListener("pointerup", () => {
-    if (!lassoStart) return;
-    if (lassoStart.rect) applyLasso(lassoStart.rect, lassoStart.additive);
-    lassoStart = null;
-    lassoEl.classList.add("hidden");
+  canvasEl.addEventListener("pointerup", (e) => {
+    if (!lasso || e.pointerId !== lasso.pointerId) return;
+    endLasso(true);
   });
+
+  // pointercancel: OS/browser took over (touch scroll, context menu, blur…).
+  // lostpointercapture: capture released unexpectedly. Both must discard the
+  // in-flight lasso without committing — no desync, no stale box.
+  canvasEl.addEventListener("pointercancel", (e) => {
+    if (lasso && lasso.pointerId === e.pointerId) endLasso(false);
+  });
+  canvasEl.addEventListener("lostpointercapture", (e) => {
+    if (lasso && lasso.pointerId === e.pointerId) endLasso(false);
+  });
+
+  function endLasso(commit) {
+    if (!lasso) return;
+    const state = lasso;
+    lasso = null;
+    try {
+      canvasEl.releasePointerCapture(state.pointerId);
+    } catch {
+      /* already released */
+    }
+    lassoEl.classList.add("hidden");
+
+    if (commit && state.rect) {
+      applyLasso(state.rect, state.additive);
+    } else if (commit && !state.rect && state.onBackground) {
+      // plain click on the black canvas → deselect everything
+      const prev = history.snapshot();
+      selected.clear();
+      clearPreview();
+      syncSelectionUI();
+      history.commit(prev);
+    } else {
+      // cancel: discard preview, leave the selection model untouched
+      clearPreview();
+    }
+  }
+
+  function cancelLasso() {
+    endLasso(false);
+  }
 
   function rowsInRect(rect) {
     const hits = [];
@@ -193,20 +304,29 @@
     return hits;
   }
 
-  function previewLasso(rect, additive) {
-    const hitRows = new Set(rowsInRect(rect));
+  // Transient preview only — never touches `.selected`.
+  function preview(rect) {
+    const hits = new Set(rowsInRect(rect));
     for (const row of canvasEl.querySelectorAll(".tab-row")) {
-      const on = hitRows.has(row) || (additive && selected.has(Number(row.dataset.tabId)));
-      row.classList.toggle("selected", on);
+      row.classList.toggle("lasso-hit", hits.has(row));
+    }
+  }
+
+  function clearPreview() {
+    for (const row of canvasEl.querySelectorAll(".tab-row.lasso-hit")) {
+      row.classList.remove("lasso-hit");
     }
   }
 
   function applyLasso(rect, additive) {
+    clearPreview();
+    const prev = history.snapshot();
     if (!additive) selected.clear();
     for (const row of rowsInRect(rect)) {
       selected.add(Number(row.dataset.tabId));
     }
     syncSelectionUI();
+    history.commit(prev);
   }
 
   /* ---------- JSON remap panel ---------- */
@@ -258,14 +378,33 @@
   document.getElementById("refresh").addEventListener("click", render);
 
   document.getElementById("select-all").addEventListener("click", async () => {
+    const prev = history.snapshot();
     const snap = await TabMap.snapshot();
     for (const tab of snap.tabs) selected.add(tab.tabId);
     syncSelectionUI();
+    history.commit(prev);
   });
 
   document.getElementById("clear-selection").addEventListener("click", () => {
+    const prev = history.snapshot();
     selected.clear();
     syncSelectionUI();
+    history.commit(prev);
+  });
+
+  // Undo/redo of the selection area: Ctrl-Z / Ctrl-Shift-Z / Ctrl-Y.
+  document.addEventListener("keydown", (e) => {
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (!ctrl) return;
+    const key = e.key.toLowerCase();
+    const isRedo = (e.shiftKey && key === "z") || key === "y";
+    const isUndo = key === "z" && !e.shiftKey;
+    if (!isUndo && !isRedo) return;
+    // Don't hijack typing in the JSON editor or other inputs.
+    if (e.target.closest("input, textarea")) return;
+    e.preventDefault();
+    const ok = isUndo ? history.undo() : history.redo();
+    if (!ok) setStatus(isUndo ? "Nothing to undo" : "Nothing to redo", true);
   });
 
   function setStatus(msg, isError = false) {

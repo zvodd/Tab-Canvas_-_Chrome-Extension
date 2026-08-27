@@ -7,8 +7,14 @@ flex-box windows you can lasso-select and reorganize via JSON.
 
 - **Canvas view** — one flex-box group per window; each tab is a row with
   favicon, title, tab id, and a checkbox pinned to the right.
-- **Lasso selection** — drag on empty canvas space to sweep-select tabs.
-  Ctrl/Shift-drag adds to the selection. Click rows or checkboxes to toggle.
+- **Lasso selection** — drag on empty canvas space, or on a window-group title
+  (it's just a drag handle), to sweep-select tabs. Ctrl/Shift-drag adds to the
+  selection. Click rows or checkboxes to toggle.
+- **Undo/redo selection** — Ctrl-Z / Ctrl-Shift-Z / Ctrl-Y across every
+  selection action (lasso, toggle, select-all, clear, per-window select/clear,
+  background deselect).
+- **Background click** — a plain click on the black canvas clears the selection.
+- **Per-window buttons** — `select` and `clear` act on a single window's tabs.
 - **Remap API** — export tabs as JSON, edit the window ids, and apply:
   `windowId` may be a real window id or a string key like `"new:work"` to
   create a new window.

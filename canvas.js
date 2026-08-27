@@ -426,6 +426,27 @@
     await render();
   });
 
+  document.getElementById("merge-selected").addEventListener("click", async () => {
+    if (selected.size === 0) {
+      setStatus("No tabs selected to merge.", true);
+      return;
+    }
+    // Merging is just a remap where every selected tab targets the same new
+    // window key — TabMap.applyRemap creates one new window and moves the rest
+    // in. No reuse-existing-window branch: if a source window is fully
+    // selected it empties and Chrome closes it, ending in the same one-window
+    // result with less code.
+    const remap = [...selected].map((tabId) => ({ tabId, windowId: "new:merged" }));
+    setStatus("Merging…");
+    const result = await TabMap.applyRemap(remap);
+    if (result.errors.length > 0) {
+      setStatus(`Merged ${result.moved}, errors: ${result.errors.join("; ")}`, true);
+    } else {
+      setStatus(`Merged ${result.moved} tab(s) into new window.`);
+    }
+    await render();
+  });
+
   // Undo/redo of the selection area: Ctrl-Z / Ctrl-Shift-Z / Ctrl-Y.
   document.addEventListener("keydown", (e) => {
     const ctrl = e.ctrlKey || e.metaKey;

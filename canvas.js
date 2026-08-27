@@ -336,14 +336,30 @@
   });
 
   document.getElementById("export-json").addEventListener("click", async () => {
+    // This JSON is prompt material for an LLM: include enough signal (title,
+    // url, current window, pinned/active) for a model to cluster tabs by topic
+    // and emit a remap of { tabId, windowId } (windowId = existing id or a
+    // string key like "new:research" to create a new window).
     const snap = await TabMap.snapshot();
-    let list = TabMap.toRemapList(snap);
+    let tabs = snap.tabs.map((t) => ({
+      tabId: t.tabId,
+      title: t.title,
+      url: t.url,
+      windowId: t.windowId,
+      pinned: t.pinned,
+      active: t.active,
+    }));
     if (selected.size > 0) {
-      list = list.filter((item) => selected.has(item.tabId));
+      tabs = tabs.filter((t) => selected.has(t.tabId));
     }
-    jsonEditor.value = JSON.stringify(list, null, 2);
+    const doc = {
+      instructions:
+        "Group these browser tabs by topic into windows. Output a JSON array remapping each tab: [{\"tabId\":<id>,\"windowId\":<existingWindowId or \"new:<topic>\">}]. Tabs sharing the same \"new:<topic>\" key go into the same new window.",
+      tabs,
+    };
+    jsonEditor.value = JSON.stringify(doc, null, 2);
     jsonPanel.classList.remove("hidden");
-    setStatus(`Exported ${list.length} tab${list.length === 1 ? "" : "s"}.`);
+    setStatus(`Exported ${tabs.length} tab${tabs.length === 1 ? "" : "s"}.`);
   });
 
   document.getElementById("copy-json").addEventListener("click", async () => {
@@ -390,6 +406,24 @@
     selected.clear();
     syncSelectionUI();
     history.commit(prev);
+  });
+
+  document.getElementById("close-selected").addEventListener("click", async () => {
+    if (selected.size === 0) {
+      setStatus("No tabs selected to close.", true);
+      return;
+    }
+    const ids = [...selected];
+    if (ids.length > 1 && !confirm(`Close ${ids.length} selected tabs?`)) return;
+    try {
+      await chrome.tabs.remove(ids);
+    } catch (err) {
+      setStatus(`Close failed: ${err.message}`, true);
+      return;
+    }
+    selected.clear();
+    syncSelectionUI();
+    await render();
   });
 
   // Undo/redo of the selection area: Ctrl-Z / Ctrl-Shift-Z / Ctrl-Y.

@@ -46,6 +46,8 @@ button {
 }
 button:hover { border-color: var(--accent); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #0a1524; font-weight: 600; }
+button.danger { color: #ff7b72; border-color: #5a2e2a; }
+button.danger:hover { background: #3a1c19; border-color: #ff7b72; }
 
 .muted { color: var(--muted); }
 

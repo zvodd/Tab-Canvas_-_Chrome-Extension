@@ -507,10 +507,37 @@
     endLasso(false);
   }
 
+  // A row's own getBoundingClientRect() ignores clipping: a row scrolled out
+  // of view inside a scrollable ancestor (.tab-list, .window-group, #canvas)
+  // still reports its full geometric rect, so a lasso drawn over the visible
+  // card would otherwise also snag tabs hidden behind that overflow. Clip the
+  // row's rect down to the visible intersection of every scrolling ancestor
+  // up to (and including) the canvas before testing overlap.
+  function visibleRect(el) {
+    let rect = el.getBoundingClientRect();
+    let node = el.parentElement;
+    while (node) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll|hidden|clip)/.test(style.overflow + style.overflowX + style.overflowY)) {
+        const cr = node.getBoundingClientRect();
+        rect = {
+          left: Math.max(rect.left, cr.left),
+          top: Math.max(rect.top, cr.top),
+          right: Math.min(rect.right, cr.right),
+          bottom: Math.min(rect.bottom, cr.bottom),
+        };
+      }
+      if (node === canvasEl) break;
+      node = node.parentElement;
+    }
+    return rect;
+  }
+
   function rowsInRect(rect) {
     const hits = [];
     for (const row of canvasEl.querySelectorAll(".tab-row")) {
-      const r = row.getBoundingClientRect();
+      const r = visibleRect(row);
+      if (r.left >= r.right || r.top >= r.bottom) continue; // fully clipped, not actually visible
       const overlaps =
         r.left < rect.right && r.right > rect.left && r.top < rect.bottom && r.bottom > rect.top;
       if (overlaps) hits.push(row);

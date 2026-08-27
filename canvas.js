@@ -15,25 +15,25 @@
 
   /** Undo/redo stacks of selection snapshots (cloned Sets of tabIds). */
   const history = {
-    undo: [],
-    redo: [],
+    undoStack: [],
+    redoStack: [],
     commit(prevState) {
-      this.undo.push(prevState);
-      this.redo = [];
+      this.undoStack.push(prevState);
+      this.redoStack = [];
     },
     snapshot() {
       return new Set(selected);
     },
     undo() {
-      if (this.undo.length === 0) return false;
-      this.redo.push(new Set(selected));
-      replaceSelection(this.undo.pop());
+      if (this.undoStack.length === 0) return false;
+      this.redoStack.push(new Set(selected));
+      replaceSelection(this.undoStack.pop());
       return true;
     },
     redo() {
-      if (this.redo.length === 0) return false;
-      this.undo.push(new Set(selected));
-      replaceSelection(this.redo.pop());
+      if (this.redoStack.length === 0) return false;
+      this.undoStack.push(new Set(selected));
+      replaceSelection(this.redoStack.pop());
       return true;
     },
   };

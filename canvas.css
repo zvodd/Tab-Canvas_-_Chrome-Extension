@@ -116,6 +116,7 @@ button.danger:hover { background: #3a1c19; border-color: #ff7b72; }
   flex: 0 0 auto;
 }
 .side-section header .count { color: var(--muted); font-weight: 400; }
+.side-section header .mini { margin-left: auto; padding: 2px 8px; font-size: 11px; }
 
 .side-list {
   overflow-y: auto;
